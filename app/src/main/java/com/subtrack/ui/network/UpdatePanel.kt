@@ -61,6 +61,20 @@ import java.io.File
     val sessionAuthorization = remember { authorization.ticket() }
     DisposableEffect(Unit) { onDispose { lease.close(); downloaded?.delete() } }
 
+    // 用户去系统设置里允许"安装未知应用"再回来时，页面必须自己刷新这个状态；
+    // 否则按钮仍写着"去开启"，点一下又被送回同一个设置页。
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var canInstall by remember { mutableStateOf(context.packageManager.canRequestPackageInstalls()) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                canInstall = context.packageManager.canRequestPackageInstalls()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     SettingsPaddedContent(top = 12.dp, bottom = 2.dp) {
         Text(
             message,
@@ -159,15 +173,41 @@ import java.io.File
         }
         downloaded?.takeIf { config.updateEnabled }?.let { f ->
             Spacer(Modifier.height(8.dp))
+            // 系统级开关：没允许"安装未知应用"时，直接拉起安装器只会弹一个没有解释的系统对话框。
+            // 这里先说明并给一键跳转，回到应用后再点安装，已校验的候选包还在。
+            if (!canInstall) {
+                Text(
+                    "系统还没允许本应用安装应用。先点下面按钮去开启，回到这里再确认安装。",
+                    style = Type.footnote,
+                    color = Warning,
+                    modifier = Modifier.testTag("update-permission-hint"),
+                )
+                Spacer(Modifier.height(8.dp))
+            }
             SettingsButton(
-                text = "交给系统安装器（需你确认）",
+                text = if (canInstall) "交给系统安装器（需你确认）" else "去开启「安装未知应用」",
                 onClick = {
                     if (authorization.valid(sessionAuthorization)) {
-                        runCatching { UpdateInstaller(context, transport).install(f) }
-                            .onFailure {
-                                message = "安装器不可用：请检查是否允许本应用安装应用；原应用不会被删除"
+                        if (!canInstall) {
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent(
+                                        android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                        android.net.Uri.parse("package:${context.packageName}"),
+                                    ),
+                                )
+                            }.onFailure {
+                                message = "打不开系统设置：请在系统「安装未知应用」里手动允许本应用"
                                 failed = true
                             }
+                            message = "已打开系统设置：允许「安装未知应用」后返回，再点一次安装"
+                        } else {
+                            runCatching { UpdateInstaller(context, transport).install(f) }
+                                .onFailure {
+                                    message = "安装器不可用：请检查是否允许本应用安装应用；原应用不会被删除"
+                                    failed = true
+                                }
+                        }
                     }
                 },
                 tag = "update-install",
