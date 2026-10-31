@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SubTrack 启动图标前景层：白色 S 丝带 + 薄荷色尾段，代表周期订阅与台账追踪。
+     图形收在自适应图标 66dp 安全区内，任何系统遮罩下都不会被裁切。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:translateX="12.486"
+        android:translateY="11.189"
+        android:scaleX="0.162162"
+        android:scaleY="0.162162">
+
+        <!-- 底层完整 S：只在下段尾部露出薄荷色 -->
+        <path
+            android:pathData="M342,174 C342,128 302,108 256,108 C200,108 162,142 162,188 C162,232 196,254 256,268 C318,283 350,305 350,350 C350,396 312,420 256,420 C210,420 176,400 170,364"
+            android:fillColor="#00000000"
+            android:strokeColor="#FF99F6E4"
+            android:strokeWidth="58"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+
+        <!-- 白色主体：止于底部切线处，与薄荷尾段自然衔接 -->
+        <path
+            android:pathData="M342,174 C342,128 302,108 256,108 C200,108 162,142 162,188 C162,232 196,254 256,268 C318,283 350,305 350,350 C350,396 312,420 256,420"
+            android:fillColor="#00000000"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="58"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+    </group>
+</vector>
