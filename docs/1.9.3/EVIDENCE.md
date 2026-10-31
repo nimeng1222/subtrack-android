@@ -53,7 +53,16 @@ python3 scripts/device-ci.py --validate-log device.log --output artifacts/device
 
 升级链：1.9.2(59) → 1.9.3(60) 通过 `adb install -r` 覆盖，`firstInstallTime` 保持 `11:55:13` 不变。
 
-## 5. 更新资产一致性
+## 5. GitHub Actions（独立环境）
+
+`main` 上最后一次运行（run `41189034877`）：
+
+- `jvm-lint-build`：协议自测、服务端单测、JVM 单测、Lint、Debug 构建全部通过；
+- `instrumented`：在 GitHub 托管的干净 x86_64 模拟器（API 35）上跑完 172 条设备测试，全绿。
+
+这条链路是独立于本机的第二次验证：同一份源码、同一套脚本，没有本地缓存与历史数据。
+
+## 6. 更新资产一致性
 
 ```
 sha256(SubTrack-1.9.3-60.apk) = 5fc3535c…b257be48

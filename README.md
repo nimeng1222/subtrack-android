@@ -1,5 +1,7 @@
 # SubTrack（订阅台账）Android
 
+[![SubTrack CI](https://github.com/nimeng1222/subtrack-android/actions/workflows/ci.yml/badge.svg)](https://github.com/nimeng1222/subtrack-android/actions/workflows/ci.yml)
+
 > **下载最新版**：[GitHub Releases](https://github.com/nimeng1222/subtrack-android/releases/latest)（当前 v1.9.3 / 60）
 >
 > **应用内检查更新**：「设置 → 关于与更新 → 允许检查新版本 → 检查新版本」。它读取本仓库的最新 Release，
