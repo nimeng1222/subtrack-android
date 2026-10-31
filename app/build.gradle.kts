@@ -28,8 +28,8 @@ android {
         applicationId = "com.subtrack"
         minSdk = 26
         targetSdk = 35
-        versionCode = 62
-        versionName = "1.9.5"
+        versionCode = 63
+        versionName = "1.9.6"
         val updateKey = System.getenv("SUBTRACK_UPDATE_PUBLIC_KEY") ?: ""
         require(updateKey.matches(Regex("[A-Za-z0-9+/=]*"))) { "Update public key must be base64 X509 DER" }
         buildConfigField("String", "UPDATE_PUBLIC_KEY", "\"$updateKey\"")
