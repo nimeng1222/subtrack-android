@@ -65,19 +65,9 @@ jobs:
           api-level: 35
           arch: x86_64
           target: google_apis
-          # emulator-runner 会把 script 的每一行拆成独立的 sh -c 执行，上一行的后台 fixture 会在
-          # 该行退出时被清理掉——设备端连到 adb reverse 上就表现为 "unexpected end of stream"。
-          # 所以这里必须用同一个 bash 进程把「起服务 → 跑测试 → 停服务」串起来。
-          script: |
-            bash -lc '
-              set -euo pipefail
-              mkdir -p artifacts/device-ci
-              ./scripts/verify-device-services.sh start artifacts/device-ci/services.log
-              trap "./scripts/verify-device-services.sh stop artifacts/device-ci/services.log" EXIT
-              adb reverse tcp:18080 tcp:18080
-              adb reverse tcp:18450 tcp:18450
-              python3 scripts/device-ci.py --output artifacts/device-ci
-            '
+          # emulator-runner 逐行执行 script：依赖服务与测试必须在同一个 bash 进程里，
+          # 否则上一行起的 fixture 会在下一行开始前被清掉（设备端表现为 end of stream）。
+          script: bash scripts/ci-device.sh artifacts/device-ci
 
       - name: 保留设备日志与结果（失败时也上传）
         if: always()
