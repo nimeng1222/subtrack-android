@@ -1,8 +1,10 @@
 name: SubTrack CI
 
-# 发布准备 C5：JVM 单测 + Lint + Debug 构建；可执行时附模拟器集成测试。
-# 注意：本配置编写于 2026-10-27，截至交付时尚无远端仓库，未在 GitHub Actions 实际运行过；
-# 本地已用 `scripts/verify-device-services.sh` 在等效干净环境执行同一套服务编排（见 docs/FIX-REPORT-*）。
+# JVM 单测 + Lint + Debug 构建 + 模拟器设备门禁。
+# 2026-10-31 首次在真实仓库运行后修正两处环境问题：
+#   1. android-actions/setup-android@v3 会执行已下线的 `sdkmanager tools`，改为直接用 runner 预装的 sdkmanager；
+#   2. emulator-runner 用 /bin/sh（dash）执行 script，`set -o pipefail` 会直接失败，改为 `set -eu`；
+#      同时补 KVM udev 规则，避免无硬件加速时模拟器启动要 15 分钟。
 on:
   push:
     branches: ["**"]
@@ -17,7 +19,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      - name: 准备 Android SDK（runner 预装，不使用会调用已下线 tools 包的 action）
+        run: |
+          TOOL="$(command -v sdkmanager || ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)"
+          yes | "$TOOL" --licenses > /dev/null
+          "$TOOL" "platforms;android-35" "build-tools;35.0.0" > /dev/null
       - name: 设备结果协议自测
         run: python3 scripts/test-device-protocol.py
       - name: 服务端协议测试
@@ -41,12 +47,18 @@ jobs:
 
   instrumented:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+      - name: 开启 KVM（没有硬件加速时模拟器启动会非常慢）
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - name: API 35 模拟器集成测试
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -59,7 +71,7 @@ jobs:
             #  - 18450 real Python sync server (SyncE2EDeviceTest + N4 device matrix)
             # Startup is centralized so a busy port or a dead service fails the job instead of silently using an old
             # process; each run uses a throwaway DB and both are torn down on exit.
-            set -euo pipefail
+            set -eu
             mkdir -p artifacts/device-ci
             ./scripts/verify-device-services.sh start artifacts/device-ci/services.log
             trap './scripts/verify-device-services.sh stop artifacts/device-ci/services.log' EXIT
