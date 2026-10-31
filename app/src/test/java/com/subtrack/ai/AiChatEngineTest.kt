@@ -32,16 +32,18 @@ class AiChatEngineTest {
         val messages = (root.fields["messages"] as JsonValue.Arr).items
         assertEquals(4, messages.size) // system + 2 历史 + 当前问题
         val tools = (root.fields["tools"] as JsonValue.Arr).items
-        val names = tools.map { tool ->
-            val fn = ((tool as JsonValue.Obj).fields["function"] as JsonValue.Obj)
-            (fn.fields["name"] as JsonValue.Str).value
-        }
-        assertEquals(listOf("fetch_page", "read_ledger"), names)
-        // 抓取工具必须有必填 url
-        val fetchParams = ((((tools[0] as JsonValue.Obj).fields["function"] as JsonValue.Obj)
-            .fields["parameters"] as JsonValue.Obj))
-        val required = (fetchParams.fields["required"] as JsonValue.Arr).items.map { (it as JsonValue.Str).value }
-        assertEquals(listOf("url"), required)
+        val functions = tools.map { tool -> (tool as JsonValue.Obj).fields["function"] as JsonValue.Obj }
+        val names = functions.map { (it.fields["name"] as JsonValue.Str).value }
+        assertEquals(listOf("search_web", "fetch_page", "read_ledger"), names)
+        // 抓取工具必须有必填 url；搜索工具必须有必填 query（否则模型会发空搜索）。
+        val fetchParams = functions.first { (it.fields["name"] as JsonValue.Str).value == "fetch_page" }
+            .fields["parameters"] as JsonValue.Obj
+        val fetchRequired = (fetchParams.fields["required"] as JsonValue.Arr).items.map { (it as JsonValue.Str).value }
+        assertEquals(listOf("url"), fetchRequired)
+        val searchParams = functions.first { (it.fields["name"] as JsonValue.Str).value == "search_web" }
+            .fields["parameters"] as JsonValue.Obj
+        val searchRequired = (searchParams.fields["required"] as JsonValue.Arr).items.map { (it as JsonValue.Str).value }
+        assertEquals(listOf("query"), searchRequired)
     }
 
     @Test fun tool_calls_are_parsed_with_arguments() {
@@ -184,5 +186,100 @@ class AiChatEngineTest {
         assertFalse("401 是密钥问题，降级没用", com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(401, "bad key"))
         assertFalse(com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(400, "invalid model"))
         assertFalse(com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(429, "rate limited"))
+    }
+
+    @Test fun tool_arguments_returned_as_object_are_accepted() {
+        // 少数兼容网关不回 JSON 字符串而直接回对象；解析不能因此把参数丢掉。
+        val response = """
+            {"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+              {"id":"call_1","type":"function","function":{"name":"search_web","arguments":{"query":"Kimi 会员 价格"}}}
+            ]}}]}
+        """.trimIndent()
+        val step = AiChatEngine.parseStep(response, emptyList()) as AiChatEngine.Step.Tools
+        assertEquals(
+            "Kimi 会员 价格",
+            (parseObject(step.calls[0].arguments).fields["query"] as JsonValue.Str).value,
+        )
+    }
+
+    @Test fun content_returned_alongside_tool_calls_is_not_dropped() {
+        val response = """
+            {"choices":[{"message":{"role":"assistant","content":"我先搜一下官网","tool_calls":[
+              {"id":"call_1","type":"function","function":{"name":"search_web","arguments":"{\"query\":\"Kimi 会员 价格\"}"}}
+            ]}}]}
+        """.trimIndent()
+        val step = AiChatEngine.parseStep(response, emptyList()) as AiChatEngine.Step.Tools
+        assertEquals("我先搜一下官网", step.content)
+    }
+
+    @Test fun array_content_is_understood() {
+        // 部分 OpenAI 兼容网关把 content 返回成分段数组；旧实现只认字符串，会误判成空回答。
+        val response = """
+            {"choices":[{"message":{"role":"assistant","content":[
+              {"type":"text","text":"Kimi 会员 "},
+              {"type":"text","text":"Go 套餐 ¥49/月"}
+            ]}}]}
+        """.trimIndent()
+        val step = AiChatEngine.parseStep(response, listOf("https://www.kimi.com/help/membership/membership-pricing"))
+        assertEquals("Kimi 会员 Go 套餐 ¥49/月", (step as AiChatEngine.Step.Answer).text)
+    }
+
+    @Test fun search_results_are_presented_as_clues_not_prices() {
+        val payload = AiChatEngine.searchResultPayload(
+            "Kimi 会员 价格",
+            WebSearch.Outcome(
+                listOf(
+                    WebSearch.Result(
+                        "Kimi 会员套餐价格与权益对比",
+                        "https://www.kimi.com/help/membership/membership-pricing",
+                        "Go ¥49/月，Plus ¥99/月",
+                    ),
+                ),
+            ),
+        )
+        val root = parseObject(payload)
+        assertEquals("Kimi 会员 价格", (root.fields["query"] as JsonValue.Str).value)
+        val first = (root.fields["results"] as JsonValue.Arr).items.first() as JsonValue.Obj
+        assertEquals(
+            "https://www.kimi.com/help/membership/membership-pricing",
+            (first.fields["url"] as JsonValue.Str).value,
+        )
+        assertTrue((root.fields["hint"] as JsonValue.Str).value.contains("fetch_page"))
+    }
+
+    @Test fun failure_note_tells_the_user_what_happened_and_what_to_do() {
+        val note = AiChatEngine.failureNote(
+            searched = listOf("Kimi 会员 价格"),
+            attempts = listOf(
+                AiChatEngine.PageAttempt("https://www.kimi.com/membership/pricing", false, "页面正文为空"),
+                AiChatEngine.PageAttempt(
+                    "https://www.kimi.com/help/membership/membership-pricing",
+                    true,
+                    null,
+                ),
+            ),
+        )
+        assertTrue(note.contains("Kimi 会员 价格"))
+        assertTrue(note.contains("打开 2 个页面"))
+        assertTrue(note.contains("成功 1"))
+        assertTrue(note.contains("失败 1"))
+        assertTrue(note.contains("www.kimi.com"))
+        assertTrue("必须给用户可操作建议", note.contains("官网定价页链接"))
+    }
+
+    @Test fun old_history_is_trimmed_but_latest_turns_survive() {
+        val history = (1..80).map { i ->
+            if (i % 2 == 0) ChatTurn("assistant", "回答 $i") else ChatTurn("user", "问题 $i")
+        }
+        val messages = AiChatEngine.initialMessages("SYS", history)
+        // system + 最近 40 条
+        assertTrue("超长历史要裁剪，避免撑爆请求体", messages.size <= 41)
+        val last = messages.last() as JsonValue.Obj
+        assertEquals("回答 80", (last.fields["content"] as JsonValue.Str).value)
+    }
+
+    @Test fun final_answer_prompt_forbids_more_tool_calls() {
+        assertTrue(AiChatEngine.FINAL_ANSWER_PROMPT.contains("不要再请求任何工具"))
+        assertTrue(AiChatEngine.FINAL_ANSWER_PROMPT.contains("没查到"))
     }
 }

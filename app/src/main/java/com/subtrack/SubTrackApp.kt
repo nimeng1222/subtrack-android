@@ -53,6 +53,11 @@ class AppContainer(context: Context) {
     }
     suspend fun awaitSyncReady() = syncService.ensureInitialized()
     val settingsStore = SettingsStore(context.applicationContext)
+    /**
+     * AI 对话历史：应用级持有，切换底部 Tab 不会丢；同时由 [AiChatStore] 原子写入本地文件，
+     * 杀进程/重启后仍可恢复（本地优先、无账号）。
+     */
+    val aiChats = com.subtrack.ai.AiChatStore(context.applicationContext)
 
     val loadedSettings = com.subtrack.data.settings.LoadedSettings()
     val settingsState = loadedSettings.state

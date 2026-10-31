@@ -27,10 +27,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,7 +46,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.foundation.text.KeyboardOptions
@@ -52,20 +54,22 @@ import androidx.compose.ui.unit.sp
 import com.subtrack.BuildConfig
 import com.subtrack.SubTrackApp
 import com.subtrack.ai.AiChatEngine
+import com.subtrack.ai.AiConversation
 import com.subtrack.ai.ChatTurn
 import com.subtrack.ai.LedgerDigest
+import com.subtrack.ai.WebSearch
+import com.subtrack.data.backup.JsonValue
+import com.subtrack.data.backup.render
 import com.subtrack.domain.model.AppSettings
 import com.subtrack.network.NetworkTransport
 import com.subtrack.network.SecretStore
-import com.subtrack.ui.network.AiPriceDialog
-import com.subtrack.ui.network.PriceRetrievalDialog
-import com.subtrack.ui.network.SearchDialog
 import com.subtrack.ui.components.AmbientBackground
 import com.subtrack.ui.components.GlassCard
 import com.subtrack.ui.home.FloatingTabBar
 import com.subtrack.ui.settings.ActionStyle
 import com.subtrack.ui.settings.SettingsButton
 import com.subtrack.ui.settings.SettingsTextAction
+import com.subtrack.ui.settings.Tone
 import com.subtrack.ui.theme.Accent
 import com.subtrack.ui.theme.Danger
 import com.subtrack.ui.theme.Ink
@@ -82,10 +86,13 @@ import java.time.LocalDate
  * AI 助手页（底部第四个入口）。
  *
  * 与设置里的"模型配置"分开：设置只负责地址/模型/Key，这里负责真正的对话。
- * 它能做三件事：读本机台账回答问题、自己打开官网/网页核对价格、把两边放在一起比较。
+ * 它能做三件事：读本机台账回答问题、先搜索再打开官网/网页核对价格、把两边放在一起比较。
+ *
+ * 对话记录由 [com.subtrack.ai.AiChatStore] 持久化（应用私有目录），切换底部 Tab 或重启后恢复；
+ * 顶部「对话」可查看历史、切换、删除单段对话，「新建」开始一段新对话。
  *
  * 每次发送都会把「台账摘要 + 你的问题」发给你配置的模型服务；抓取的网页正文只用于本次回答，
- * 不写入台账、不落盘。等结果期间可以随时停止，迟到的响应不会再回到对话里。
+ * 不写入台账。等结果期间可以随时停止，迟到的响应不会再回到对话里。
  */
 @Composable
 fun AiScreen(
@@ -102,6 +109,13 @@ fun AiScreen(
     val container = remember { (context.applicationContext as SubTrackApp).container }
     val transport = remember { NetworkTransport(BuildConfig.DEBUG) }
     val secrets = remember { SecretStore(context) }
+    val chatStore = container.aiChats
+    val chatState by chatStore.state.collectAsState()
+    val conversations = chatState.conversations
+    val currentConversation = conversations.firstOrNull { it.id == chatState.currentId }
+    val turns = currentConversation?.turns.orEmpty()
+
+    LaunchedEffect(Unit) { chatStore.ensureLoaded() }
 
     // 近期/本月实付：这里自己算一次，避免把统计参数从 MainActivity 一路传进来。
     var recentPaidMinor by remember { mutableStateOf<Long?>(null) }
@@ -122,15 +136,12 @@ fun AiScreen(
         }
     }
 
-    var turns by remember { mutableStateOf<List<ChatTurn>>(emptyList()) }
     var input by remember { mutableStateOf("") }
     var running by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
-    // 旧的三件工具（粘贴材料核对 / 公开资料 / 引证检索）保留下来，作为 AI 页的次级入口，
-    // 不再散落在设置页里和模型配置混在一起。
-    var toolOpen by remember { mutableStateOf<String?>(null) }
+    var showChats by remember { mutableStateOf(false) }
     DisposableEffect(Unit) { onDispose { job?.cancel() } }
 
     // 已保存的来源变了（换地址 / 关开关 / 清除连接）：取消在途请求，迟到的回答不能再回到对话里。
@@ -140,8 +151,10 @@ fun AiScreen(
     LaunchedEffect(settings.network.aiBaseUrl, settings.network.connectionRevision, settings.network.aiEnabled) {
         val current = "${settings.network.aiBaseUrl}#${settings.network.connectionRevision}#${settings.network.aiEnabled}"
         if (current != sourceKey) {
-            job?.cancel()
+            // 先更新来源键再取消：取消是异步的，这样 catch 里一定能判断出"是换来源导致的取消"，
+            // 不会把旧来源的残留以"已停止"写进新来源的对话。
             sourceKey = current
+            job?.cancel()
             error = null
             progress = null
         }
@@ -153,6 +166,16 @@ fun AiScreen(
         if (turns.isNotEmpty()) listState.animateScrollToItem(turns.size)
     }
 
+    fun startNewConversation() {
+        if (running) return
+        job?.cancel()
+        error = null
+        progress = null
+        input = ""
+        showChats = false
+        scope.launch { chatStore.startDraft() }
+    }
+
     fun send() {
         val question = input.trim()
         if (question.isEmpty() || running) return
@@ -162,16 +185,27 @@ fun AiScreen(
         val savedUrl = settings.network.aiBaseUrl
         val endpoint = com.subtrack.ai.AiEndpoint.chatUrl(savedUrl)
         val model = settings.network.aiModel
-        val history = turns
         val sourceAtSend = sourceKey
-        turns = history + ChatTurn("user", question)
         input = ""
         error = null
         running = true
         progress = null
         job = scope.launch {
             val citations = mutableListOf<String>()
+            val searched = mutableListOf<String>()
+            val attempts = mutableListOf<AiChatEngine.PageAttempt>()
+            val attemptedUrls = mutableSetOf<String>()
+            var fetches = 0
+            var searches = 0
+            var conversationId = ""
             try {
+                // 先从磁盘恢复，确保 send 发生在首帧加载之前时也能拿到正确的历史。
+                chatStore.ensureLoaded()
+                val history = chatStore.state.value.conversations
+                    .firstOrNull { it.id == chatStore.state.value.currentId }
+                    ?.turns.orEmpty()
+                // 先落盘用户消息：即使随后切 Tab 或被系统杀掉，回来也能看到自己问过什么。
+                conversationId = chatStore.beginTurn(question)
                 val key = withContextIo { secrets.getBound(savedUrl) }
                 require(!key.isNullOrBlank()) { "还没有保存这个地址的密钥，去「设置 → 联网与 AI」里保存" }
                 val digest = withContextIo {
@@ -187,11 +221,26 @@ fun AiScreen(
                     history,
                 )
                 messages += AiChatEngine.userMessage(question)
-                var fetches = 0
                 var answer = ""
                 var useTools = true
-                for (round in 0 until AiChatEngine.MAX_TOOL_ROUNDS) {
-                    val body = AiChatEngine.requestBody(model, messages, includeTools = useTools)
+                var finalPromptSent = false
+                var round = 0
+                // 工具阶段的时间上限：单次请求最长 25 秒，8 次抓取 + 3 次搜索足够；
+                // 超过 90 秒就停止继续查，转入"整理回答"，避免用户对着转圈等好几分钟。
+                val toolDeadlineMillis = System.currentTimeMillis() + 90_000
+                // 多留一轮：最后一轮不带工具，专门把已经查到的材料整理成回答。
+                val maxRequests = AiChatEngine.MAX_TOOL_ROUNDS + 1
+                while (round < maxRequests) {
+                    val toolsAllowed = useTools &&
+                        round < AiChatEngine.MAX_TOOL_ROUNDS &&
+                        fetches < AiChatEngine.MAX_FETCHES &&
+                        System.currentTimeMillis() < toolDeadlineMillis
+                    if (!toolsAllowed && useTools && !finalPromptSent) {
+                        messages += AiChatEngine.systemMessage(AiChatEngine.FINAL_ANSWER_PROMPT)
+                        finalPromptSent = true
+                        progress = "整理已查到的资料…"
+                    }
+                    val body = AiChatEngine.requestBody(model, messages, includeTools = toolsAllowed)
                     // 工具循环会在几秒内连续请求同一个地址；这里不能用"每地址 2 秒"的限流，
                     // 否则第二轮必然被打成"请求过于频繁"。轮次上限由 MAX_TOOL_ROUNDS 控制。
                     val response = try {
@@ -202,40 +251,87 @@ fun AiScreen(
                     } catch (e: com.subtrack.network.HttpStatusException) {
                         // 有些服务对"不支持 tool calling 的模型"不回 400 而是 403。第一轮就退化成
                         // 普通对话再试一次；还失败就把服务端原文交给用户，而不是只留一句 HTTP 403。
-                        if (useTools && round == 0 && com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(e.code, e.detail)) {
+                        if (useTools && toolsAllowed && round == 0 &&
+                            com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(e.code, e.detail)
+                        ) {
                             useTools = false
                             messages[0] = AiChatEngine.systemMessage(
                                 AiChatEngine.systemPrompt(today.toString(), tools = false) + "\n\n" + digest,
                             )
                             progress = "这个服务不支持工具调用，改为普通对话…"
+                            round++
                             continue
                         }
                         throw e
                     }
-                    when (val step = AiChatEngine.parseStep(response, citations)) {
+                    val step = try {
+                        AiChatEngine.parseStep(response, citations)
+                    } catch (e: Exception) {
+                        // 收尾那一轮即使模型回空，也走下面的"可操作说明"，不留一句裸错误。
+                        if (!toolsAllowed) break else throw e
+                    }
+                    when (step) {
                         is AiChatEngine.Step.Answer -> { answer = step.text; break }
                         is AiChatEngine.Step.Tools -> {
+                            if (!toolsAllowed) {
+                                // 已经明确不给工具了，模型却仍返回 tool_calls：有文字就采用，没有就收尾。
+                                if (step.content.isNotBlank()) answer = step.content
+                                break
+                            }
                             messages += step.assistantMessage
                             for (call in step.calls) {
                                 when (call.name) {
+                                    "search_web" -> {
+                                        val query = toolArgument(call.arguments, "query")
+                                        when {
+                                            query.isBlank() ->
+                                                messages += AiChatEngine.toolResultMessage(
+                                                    call.id, toolError("缺少 query"),
+                                                )
+                                            searches >= AiChatEngine.MAX_SEARCHES ->
+                                                messages += AiChatEngine.toolResultMessage(
+                                                    call.id,
+                                                    toolError("本轮搜索次数已达上限，请直接打开已知网页或基于已有资料回答"),
+                                                )
+                                            else -> {
+                                                searches++
+                                                searched += query
+                                                progress = "正在搜索：${query.take(24)}…"
+                                                val outcome = WebSearch.search(transport, query)
+                                                messages += AiChatEngine.toolResultMessage(
+                                                    call.id,
+                                                    AiChatEngine.searchResultPayload(query, outcome),
+                                                )
+                                            }
+                                        }
+                                    }
                                     "fetch_page" -> {
-                                        if (fetches >= AiChatEngine.MAX_FETCHES) {
-                                            messages += AiChatEngine.toolResultMessage(call.id, "{\"error\":\"本轮抓取次数已达上限\"}")
-                                            continue
+                                        val target = toolArgument(call.arguments, "url")
+                                        when {
+                                            target.isBlank() ->
+                                                messages += AiChatEngine.toolResultMessage(
+                                                    call.id, toolError("缺少 url"),
+                                                )
+                                            target in attemptedUrls ->
+                                                messages += AiChatEngine.toolResultMessage(
+                                                    call.id,
+                                                    toolError("这个地址本轮已经打开过，请直接使用上面的正文，或换一个来源"),
+                                                )
+                                            fetches >= AiChatEngine.MAX_FETCHES ->
+                                                messages += AiChatEngine.toolResultMessage(
+                                                    call.id,
+                                                    toolError("本轮打开页面的次数已达上限，请基于已有资料回答"),
+                                                )
+                                            else -> {
+                                                attemptedUrls += target
+                                                fetches++
+                                                progress = "正在打开 ${hostOf(target)}…"
+                                                val page = AiChatEngine.fetchPage(transport, target)
+                                                attempts += AiChatEngine.PageAttempt(page.url, page.ok, page.reason)
+                                                if (page.ok) citations += target
+                                                messages += AiChatEngine.toolResultMessage(call.id, page.payload)
+                                            }
                                         }
-                                        val url = runCatching {
-                                            com.subtrack.network.parseObject(call.arguments).fields["url"]
-                                        }.getOrNull()
-                                        val target = (url as? com.subtrack.data.backup.JsonValue.Str)?.value.orEmpty()
-                                        if (target.isBlank()) {
-                                            messages += AiChatEngine.toolResultMessage(call.id, "{\"error\":\"缺少 url\"}")
-                                            continue
-                                        }
-                                        fetches++
-                                        progress = "正在打开 ${hostOf(target)}…"
-                                        val (payload, failed) = AiChatEngine.fetchPage(transport, target)
-                                        if (!failed) citations += target
-                                        messages += AiChatEngine.toolResultMessage(call.id, payload)
                                     }
                                     "read_ledger" -> {
                                         progress = "正在读本机台账…"
@@ -246,28 +342,51 @@ fun AiScreen(
                                             monthPaidMinor = monthPaidMinor,
                                         ))
                                     }
-                                    else -> messages += AiChatEngine.toolResultMessage(call.id, "{\"error\":\"未知工具\"}")
+                                    else -> messages += AiChatEngine.toolResultMessage(call.id, toolError("未知工具"))
                                 }
                             }
-                            progress = if (round + 1 >= AiChatEngine.MAX_TOOL_ROUNDS) "整理回答…" else "继续查资料…"
+                            progress = if (fetches >= AiChatEngine.MAX_FETCHES) "整理回答…" else "继续查资料…"
                         }
                     }
+                    round++
                 }
                 if (answer.isBlank()) {
-                    throw IllegalStateException("查了 $fetches 个页面还没整理出答案，再说一次或换个问法试试")
+                    // 不再只给一句"换个问法试试"：把检索词、成功/失败页面和下一步建议交给用户。
+                    if (sourceAtSend != sourceKey) return@launch
+                    chatStore.appendTurn(
+                        conversationId,
+                        ChatTurn("assistant", AiChatEngine.failureNote(searched, attempts), citations.distinct(), failed = true),
+                    )
+                    return@launch
                 }
                 // 来源已经换了：这条回答属于旧来源，直接丢弃（保留用户刚问的问题）。
                 if (sourceAtSend != sourceKey) return@launch
-                turns = turns + ChatTurn("assistant", answer, citations.distinct())
+                chatStore.appendTurn(conversationId, ChatTurn("assistant", answer, citations.distinct()))
             } catch (e: CancellationException) {
                 // 用户点"停"才留一句"已停止"；如果是换了来源/关了开关导致的取消，静默丢弃，
                 // 否则旧来源的残留会以"已停止"的形式出现在新来源的对话里。
-                if (sourceAtSend == sourceKey) {
-                    turns = turns + ChatTurn("assistant", "已停止。上面已经查到的内容仍然保留。", failed = true)
+                // 协程已被取消，落盘必须放在 NonCancellable 里，否则 appendTurn 会在第一个挂起点直接抛取消。
+                if (sourceAtSend == sourceKey && conversationId.isNotBlank()) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                        chatStore.appendTurn(
+                            conversationId,
+                            ChatTurn("assistant", "已停止。上面已经查到的内容仍然保留。", failed = true),
+                        )
+                    }
                 }
                 throw e
             } catch (e: Exception) {
-                error = e.message?.take(200) ?: "请求失败"
+                val message = e.message?.take(300) ?: "请求失败"
+                error = message
+                // 错误条只存在于当前页面；把失败原因也写进对话，回到这里时不会只剩一个没有回答的问题。
+                if (conversationId.isNotBlank() && sourceAtSend == sourceKey) {
+                    runCatching {
+                        chatStore.appendTurn(
+                            conversationId,
+                            ChatTurn("assistant", "这次没有完成：$message", failed = true),
+                        )
+                    }
+                }
             } finally {
                 running = false
                 progress = null
@@ -275,23 +394,43 @@ fun AiScreen(
         }
     }
 
-    AiLegacyTools(settings, toolOpen, onClose = { toolOpen = null })
+    if (showChats) {
+        ConversationManagerDialog(
+            conversations = conversations,
+            currentId = chatState.currentId,
+            onClose = { showChats = false },
+            onSelect = { id ->
+                showChats = false
+                scope.launch { chatStore.select(id) }
+            },
+            onNew = { startNewConversation() },
+            onDelete = { conversation ->
+                // 删除当前对话时，先取消在途请求，避免回答写回一段已经删掉的记录。
+                if (conversation.id == chatState.currentId) job?.cancel()
+                scope.launch { chatStore.delete(conversation.id) }
+            },
+        )
+    }
 
     AmbientBackground {
         Column(Modifier.fillMaxSize()) {
             Column(Modifier.statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 8.dp)) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("AI 助手", style = Type.title2, color = Ink, modifier = Modifier.weight(1f))
-                    if (turns.isNotEmpty()) {
-                        SettingsTextAction("清空", onClick = { turns = emptyList(); error = null }, enabled = !running)
-                    }
+                    SettingsTextAction(
+                        "对话",
+                        onClick = { showChats = true },
+                        enabled = !running,
+                        tag = "ai-chat-open",
+                    )
+                    SettingsTextAction(
+                        "新建",
+                        onClick = { startNewConversation() },
+                        enabled = !running,
+                        tag = "ai-chat-new-top",
+                    )
                 }
                 if (configured) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        SettingsTextAction("粘贴材料核对", onClick = { toolOpen = "material" }, enabled = !running)
-                        SettingsTextAction("查公开资料", onClick = { toolOpen = "search" }, enabled = !running)
-                        SettingsTextAction("引证检索", onClick = { toolOpen = "citations" }, enabled = !running)
-                    }
                     // 设置里勾了多个模型时，这里可以随时切换；只有一个就不占地方。
                     if (settings.network.aiModels.size > 1) {
                         Row(
@@ -364,7 +503,7 @@ fun AiScreen(
                         SettingsTextAction("重试", onClick = {
                             input = turns.lastOrNull { it.role == "user" }?.text.orEmpty()
                             error = null
-                        }, tone = com.subtrack.ui.settings.Tone.Danger)
+                        }, tone = Tone.Danger)
                     }
                 }
             }
@@ -387,21 +526,116 @@ fun AiScreen(
 }
 
 @Composable
-private fun AiLegacyTools(settings: AppSettings, tool: String?, onClose: () -> Unit) {
-    val context = LocalContext.current
-    val transport = remember { NetworkTransport(BuildConfig.DEBUG) }
-    val secrets = remember { SecretStore(context) }
-    when (tool) {
-        "material" -> AiPriceDialog(settings, transport, secrets, onDismiss = onClose)
-        "search" -> SearchDialog(onClose = onClose)
-        "citations" -> PriceRetrievalDialog(settings, onClose = onClose)
+private fun ConversationManagerDialog(
+    conversations: List<AiConversation>,
+    currentId: String?,
+    onClose: () -> Unit,
+    onSelect: (String) -> Unit,
+    onNew: () -> Unit,
+    onDelete: (AiConversation) -> Unit,
+) {
+    var pendingDelete by remember { mutableStateOf<AiConversation?>(null) }
+    val target = pendingDelete
+    if (target != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除这段对话？", style = Type.headline, color = Ink) },
+            text = {
+                Text(
+                    "「${target.title.ifBlank { "未命名对话" }}」及其中 ${target.turns.size} 条消息会从本机删除，无法恢复。",
+                    style = Type.footnote.copy(lineHeight = 20.sp),
+                    color = InkSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { pendingDelete = null; onDelete(target) },
+                    modifier = Modifier.testTag("ai-chat-delete-confirm"),
+                ) { Text("删除", color = Danger) }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
+        )
+        return
     }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("对话记录", style = Type.headline, color = Ink) },
+        text = {
+            Column(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                if (conversations.isEmpty()) {
+                    Text(
+                        "还没有对话记录。发送第一条消息后会自动保存在本机；切到别的页面再回来也不会丢。",
+                        style = Type.footnote.copy(lineHeight = 20.sp),
+                        color = InkSecondary,
+                        modifier = Modifier.testTag("ai-chat-empty"),
+                    )
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(conversations, key = { it.id }) { conversation ->
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(
+                                        if (conversation.id == currentId) Accent.copy(alpha = 0.10f)
+                                        else Color.Transparent,
+                                    )
+                                    .clickable { onSelect(conversation.id) }
+                                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                                    .testTag("ai-chat-row"),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        conversation.title.ifBlank { "未命名对话" },
+                                        style = Type.footnote.copy(fontWeight = FontWeight.Medium),
+                                        color = Ink,
+                                        maxLines = 1,
+                                    )
+                                    Text(
+                                        "${conversation.turns.size} 条消息 · ${formatChatTime(conversation.updatedAtMillis)}" +
+                                            if (conversation.id == currentId) " · 当前" else "",
+                                        style = Type.caption2,
+                                        color = InkSecondary,
+                                    )
+                                }
+                                SettingsTextAction(
+                                    "删除",
+                                    onClick = { pendingDelete = conversation },
+                                    tone = Tone.Danger,
+                                    tag = "ai-chat-delete",
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                SettingsButton("新建对话", onClick = onNew, tag = "ai-chat-new", style = ActionStyle.Secondary)
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("关闭") } },
+    )
 }
 
 private suspend fun <T> withContextIo(block: suspend () -> T): T =
     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { block() }
 
 private fun hostOf(url: String): String = runCatching { java.net.URI(url).host ?: url }.getOrDefault(url)
+
+private fun toolArgument(arguments: String, key: String): String = runCatching {
+    (com.subtrack.network.parseObject(arguments).fields[key] as? JsonValue.Str)?.value.orEmpty()
+}.getOrDefault("")
+
+private fun toolError(message: String): String =
+    JsonValue.Obj(mapOf("error" to JsonValue.Str(message))).render()
+
+private fun formatChatTime(millis: Long): String {
+    if (millis <= 0) return "时间未知"
+    return runCatching {
+        java.time.Instant.ofEpochMilli(millis)
+            .atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"))
+    }.getOrDefault("")
+}
 
 @Composable
 private fun Composer(
@@ -440,7 +674,7 @@ private fun Composer(
                 decorationBox = { inner ->
                     if (value.isEmpty()) {
                         Text(
-                            if (running) "正在处理…" else "问点什么，比如：Netflix 现在多少钱？",
+                            if (running) "正在处理…" else "问点什么，比如：Kimi 会员现在多少钱？",
                             style = Type.callout,
                             color = InkTertiary,
                             maxLines = 1,
@@ -482,13 +716,13 @@ private fun AiIntro(onPick: (String) -> Unit) {
             Text("可以直接问，也可以让我去查", style = Type.headline, color = Ink)
             Spacer(Modifier.height(6.dp))
             Text(
-                "我会读你的本机台账，也能打开官网/网页核对价格。查过的页面会列在回答下面。",
+                "我会读你的本机台账，也能先搜索、再打开官网/网页核对价格。查过的页面会列在回答下面。",
                 style = Type.footnote.copy(lineHeight = 20.sp),
                 color = InkSecondary,
             )
             Spacer(Modifier.height(12.dp))
             listOf(
-                "Netflix 标准版现在多少钱？和我记的比一下",
+                "Kimi 会员连续包月多少钱？和我记的比一下",
                 "我今年订阅一共花了多少？",
                 "哪条最近要涨价，或者下周就要扣费？",
             ).forEach { sample ->
@@ -507,7 +741,9 @@ private fun AiIntro(onPick: (String) -> Unit) {
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "每次发送会把「台账摘要 + 你的问题」发给你配置的模型服务，可能产生费用；网页正文只用于本次回答。",
+            "每次发送会把「台账摘要 + 你的问题」发给你配置的模型服务，可能产生费用；" +
+                "需要核对价格时，模型会先把查询词发给公开搜索引擎，再打开它选中的网页；" +
+                "网页正文只用于本次回答。对话记录只保存在本机。",
             style = Type.caption.copy(lineHeight = 17.sp),
             color = InkSecondary,
             modifier = Modifier.padding(horizontal = 4.dp),
