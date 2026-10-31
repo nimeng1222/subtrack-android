@@ -29,6 +29,9 @@ port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
 start() {
   need python3; need curl; need lsof
+  # 日志目录由调用方给（CI 里是 artifacts/device-ci）；相对路径在 emulator-runner 的逐行 sh -c 下
+  # 可能落在不存在的目录里，这里自己建，别让一个重定向把整条服务链带崩。
+  mkdir -p "$(dirname "$LOG")"
   : > "$LOG"
   if port_busy "$FIXTURE_PORT"; then echo "FAIL: port ${FIXTURE_PORT} already in use (refusing to reuse an unknown process)" | tee -a "$LOG" >&2; exit 1; fi
   if port_busy "$SYNC_PORT"; then echo "FAIL: port ${SYNC_PORT} already in use (refusing to reuse an unknown process)" | tee -a "$LOG" >&2; exit 1; fi
