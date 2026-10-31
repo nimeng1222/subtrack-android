@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "dataVersion": "2026-10-28-example-unverified",
+  "templates": [
+    {
+      "id": "github-us-pro",
+      "serviceName": "GitHub",
+      "region": "US",
+      "plan": "Pro",
+      "currency": "USD",
+      "billingPeriod": "MONTHLY",
+      "referencePriceMinor": null,
+      "taxIncluded": null,
+      "trialTerms": null,
+      "websiteUrl": "https://github.com/pricing",
+      "cancellationUrl": null,
+      "sourceUrl": "https://github.com/pricing",
+      "verifiedAt": null
+    },
+    {
+      "id": "icloud-cn-50",
+      "serviceName": "iCloud+",
+      "region": "CN",
+      "plan": "50GB",
+      "currency": "CNY",
+      "billingPeriod": "MONTHLY",
+      "referencePriceMinor": null,
+      "taxIncluded": null,
+      "trialTerms": null,
+      "websiteUrl": "https://www.apple.com.cn/icloud/",
+      "cancellationUrl": null,
+      "sourceUrl": "https://www.apple.com.cn/icloud/",
+      "verifiedAt": null
+    },
+    {
+      "id": "proton-eu-year",
+      "serviceName": "Proton",
+      "region": "EU",
+      "plan": "Mail Plus",
+      "currency": "EUR",
+      "billingPeriod": "YEARLY",
+      "referencePriceMinor": null,
+      "taxIncluded": null,
+      "trialTerms": null,
+      "websiteUrl": "https://proton.me/mail/pricing",
+      "cancellationUrl": null,
+      "sourceUrl": "https://proton.me/mail/pricing",
+      "verifiedAt": null
+    },
+    {
+      "id": "spotify-jp",
+      "serviceName": "Spotify",
+      "region": "JP",
+      "plan": "Individual",
+      "currency": "JPY",
+      "billingPeriod": "MONTHLY",
+      "referencePriceMinor": null,
+      "taxIncluded": null,
+      "trialTerms": null,
+      "websiteUrl": "https://www.spotify.com/jp/premium/",
+      "cancellationUrl": null,
+      "sourceUrl": "https://www.spotify.com/jp/premium/",
+      "verifiedAt": null
+    }
+  ]
+}

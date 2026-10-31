@@ -1,0 +1,74 @@
+name: SubTrack CI
+
+# 发布准备 C5：JVM 单测 + Lint + Debug 构建；可执行时附模拟器集成测试。
+# 注意：本配置编写于 2026-10-27，截至交付时尚无远端仓库，未在 GitHub Actions 实际运行过；
+# 本地已用 `scripts/verify-device-services.sh` 在等效干净环境执行同一套服务编排（见 docs/FIX-REPORT-*）。
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  jvm-lint-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: 设备结果协议自测
+        run: python3 scripts/test-device-protocol.py
+      - name: 服务端协议测试
+        run: cd server && python3 -m unittest -v test_server.py
+      - name: JVM 单元测试
+        run: ./gradlew :app:testDebugUnitTest
+      - name: Lint（需联网解析 lint-gradle 依赖）
+        run: ./gradlew :app:lintDebug
+      - name: Debug 构建
+        run: ./gradlew :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lint-results
+          path: app/build/reports/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: app/build/test-results/testDebugUnitTest/
+
+  instrumented:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: API 35 模拟器集成测试
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          script: |
+            # F7: the strict device gate needs BOTH services.
+            #  - 18080 network fixture (templates/fx/update/search/model fault endpoints)
+            #  - 18450 real Python sync server (SyncE2EDeviceTest + N4 device matrix)
+            # Startup is centralized so a busy port or a dead service fails the job instead of silently using an old
+            # process; each run uses a throwaway DB and both are torn down on exit.
+            set -euo pipefail
+            mkdir -p artifacts/device-ci
+            ./scripts/verify-device-services.sh start artifacts/device-ci/services.log
+            trap './scripts/verify-device-services.sh stop artifacts/device-ci/services.log' EXIT
+            adb reverse tcp:18080 tcp:18080
+            adb reverse tcp:18450 tcp:18450
+            python3 scripts/device-ci.py --output artifacts/device-ci
+      - name: 保留设备日志与结果（失败时也上传）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-results
+          path: artifacts/device-ci/

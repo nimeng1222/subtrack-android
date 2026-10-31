@@ -1,0 +1,34 @@
+services:
+  app:
+    build: .
+    environment:
+      SUBTRACK_SETUP_TOKEN: ${SUBTRACK_SETUP_TOKEN:?Set a random 32+ character initialization token}
+    volumes:
+      - ledger:/data
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - backend
+  tls:
+    image: caddy:2-alpine
+    environment:
+      SUBTRACK_HOST: ${SUBTRACK_HOST:?Set your HTTPS hostname}
+    ports:
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - backend
+networks:
+  backend:
+volumes:
+  ledger:
+  caddy_data:
+  caddy_config:

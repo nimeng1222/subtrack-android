@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">订阅台账</string>
+    <string name="widget_description">月均与近期到期一眼可见</string>
+</resources>

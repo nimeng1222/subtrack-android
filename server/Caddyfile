@@ -1,0 +1,6 @@
+{$SUBTRACK_HOST} {
+    request_body {
+        max_size 1MB
+    }
+    reverse_proxy app:8080
+}
