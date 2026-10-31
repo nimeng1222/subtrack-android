@@ -36,6 +36,17 @@
   - `04` 服务对 tools 回 403：自动降级为普通对话，正常显示回答、无错误气泡；
   - `05` 服务返回 403 + 原因：气泡显示「HTTP 403：这个 Key 没有该模型的对话权限」，旁边有「设置」。
 
+## 交付物
+
+| 项 | 值 |
+| --- | --- |
+| 仓库 | https://github.com/nimeng1222/subtrack-android |
+| 发布 | https://github.com/nimeng1222/subtrack-android/releases/tag/v1.9.4 |
+| APK | `SubTrack-1.9.4-61.apk`，15,114,912 字节 |
+| SHA-256 | `c2421ae2093e62eb3f0e79a99b24c0e0b2b1fdb03426ceaabf848c485cfff386`（与 Release 资产 `digest` 一致） |
+| 版本/签名 | 1.9.4 / 61；`com.subtrack`；Debug 证书 `df3cced0…` |
+| 覆盖升级 | 1.9.3(60) → 1.9.4(61)：`firstInstallTime` 未变 |
+
 ## 兼容与迁移
 
 | 项 | 变化 | 老数据 |
