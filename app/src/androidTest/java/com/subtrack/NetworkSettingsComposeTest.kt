@@ -231,4 +231,31 @@ class NetworkSettingsComposeTest {
                     listOfNotNull(node.config.getOrNull(SemanticsProperties.EditableText)?.text)
             }
             .joinToString("")
+
+    /**
+     * 服务对 tool calling 直接回 403 时，应用要自动去掉工具再试一次，而不是把 403 甩给用户。
+     * 这条路径在真实设备上跑过：本地 fixture 的 /ai-tool-blocked 就是"带 tools → 403，
+     * 不带 tools → 正常回答"。
+     */
+    @Test fun ai_falls_back_to_plain_chat_when_tools_are_rejected(): Unit = runBlocking {
+        val app = compose.activity.application as SubTrackApp
+        val store = app.container.settingsStore
+        val original = store.observe().first()
+        val secrets = SecretStore(app)
+        val endpoint = "http://127.0.0.1:18080/ai-tool-blocked"
+        try {
+            store.updateNetwork { it.copy(aiBaseUrl = endpoint, aiEnabled = true, aiModel = "fixture") }
+            withContext(Dispatchers.IO) { secrets.putBound(endpoint, "fixture-key") }
+            openAiTab()
+            compose.onNodeWithTag("ai-input").performTextInput("你好")
+            compose.onNodeWithTag("ai-send").performClick()
+            // 气泡的 tag 在外层容器上，文字在子节点里：直接等"降级后的回答"这句话出现在屏幕上。
+            compose.waitUntil(30_000) {
+                compose.onAllNodesWithText("普通对话", substring = true).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onAllNodesWithTag("ai-error", useUnmergedTree = true).assertCountEquals(0)
+        } finally {
+            secrets.clear(); store.update(original); store.updateNetwork { original.network }
+        }
+    }
 }

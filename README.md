@@ -2,7 +2,7 @@
 
 [![SubTrack CI](https://github.com/nimeng1222/subtrack-android/actions/workflows/ci.yml/badge.svg)](https://github.com/nimeng1222/subtrack-android/actions/workflows/ci.yml)
 
-> **下载最新版**：[GitHub Releases](https://github.com/nimeng1222/subtrack-android/releases/latest)（当前 v1.9.3 / 60）
+> **下载最新版**：[GitHub Releases](https://github.com/nimeng1222/subtrack-android/releases/latest)（当前 v1.9.4 / 61）
 >
 > **应用内检查更新**：「设置 → 关于与更新 → 允许检查新版本 → 检查新版本」。它读取本仓库的最新 Release，
 > 下载后校验大小、版本码与签名证书，必须与当前安装是同一张证书才会交给系统安装器，不会静默安装、不会卸载原应用。
@@ -10,7 +10,7 @@
 > **升级保留数据**：包名固定 `com.subtrack`，同证书覆盖安装；`adb install -r` 或直接点安装包即可，不需要先卸载。
 > 当前发布包是 **Debug 签名**（与历史交付的 1.9.0–1.9.2 一致），因此只能覆盖同签名的安装；换正式签名需要先卸载。
 >
-> 当前状态：v1.9.3 已通过 **465 条 JVM 单测 + 172 条严格设备门禁 + Lint 0 error**；台账、提醒、统计、同步、更新校验的既有语义未改动。
+> 当前状态：v1.9.4 已通过 **472 条 JVM 单测 + 173 条严格设备门禁 + Lint 0 error**；台账、提醒、统计、同步、更新校验的既有语义未改动。
 > 历史 v1.4.0 的说明保留在下方，仅作背景。
 
 本地优先的订阅管理 App。零账号、零网络权限、零广告。设计走 Apple Liquid Glass 方向：环境色场 + 玻璃卡 + 浮动胶囊 Tab。

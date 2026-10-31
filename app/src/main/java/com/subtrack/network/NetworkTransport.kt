@@ -1,5 +1,6 @@
 package com.subtrack.network
 
+import com.subtrack.data.backup.JsonValue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -20,6 +21,64 @@ object NetworkUrls {
         return u
     }
     fun external(raw: String): Boolean = runCatching { validate(raw); true }.getOrDefault(false)
+}
+
+/**
+ * 非 2xx 响应。
+ *
+ * 只抛 "HTTP 403" 让用户无从下手：同一句提示可能意味着 Key 没权限、模型不支持工具调用、
+ * 或者地址少了 /chat/completions。这里带上**服务端自己返回的说明**（已剥 HTML、截断）。
+ */
+class HttpStatusException(val code: Int, val detail: String) : IllegalArgumentException(
+    if (detail.isBlank()) "服务请求失败 HTTP $code" else "服务请求失败 HTTP $code：$detail",
+)
+
+/** 把任意错误响应压成一行人话：JSON 取 message 字段，HTML 去标签，控制字符清掉，最长 [limit]。 */
+object NetworkErrorText {
+    fun summarize(raw: String, limit: Int = 240): String {
+        var text = raw.trim()
+        if (text.isEmpty()) return ""
+        if (text.startsWith("{")) {
+            val json = runCatching {
+                val root = parseObject(text)
+                fun pick(key: String): String? = when (val v = root.fields[key]) {
+                    is JsonValue.Str -> v.value
+                    is JsonValue.Obj -> (v.fields["message"] as? JsonValue.Str)?.value
+                        ?: (v.fields["msg"] as? JsonValue.Str)?.value
+                    else -> null
+                }
+                pick("error") ?: pick("message") ?: pick("detail") ?: pick("msg")
+            }.getOrNull()
+            if (!json.isNullOrBlank()) text = json
+        }
+        text = text
+            .replace(Regex("(?is)<(script|style)[^>]*>.*?</\\1>"), " ")
+            .replace(Regex("(?s)<[^>]+>"), " ")
+            .replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+            .replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ")
+            .replace(Regex("[\\u0000-\\u001F\\u007F]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        // 只有括号/空引号（例如网关回 "{}"）等于没给信息，别让错误提示变成 "HTTP 429：{}"。
+        if (text.none { it.isLetterOrDigit() || it > '\u007F' }) text = ""
+        return if (text.length > limit) text.take(limit).trimEnd() + "…" else text
+    }
+
+    /** 读错误流（最多 4KB），读不到就返回空串；绝不因为读错误体而掩盖原始状态码。 */
+    fun readErrorBody(connection: HttpURLConnection, maxBytes: Int = 4096): String = runCatching {
+        connection.errorStream?.use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(1024)
+            var total = 0
+            while (total < maxBytes) {
+                val n = input.read(buffer, 0, minOf(buffer.size, maxBytes - total))
+                if (n <= 0) break
+                output.write(buffer, 0, n)
+                total += n
+            }
+            String(output.toByteArray(), Charsets.UTF_8)
+        }.orEmpty()
+    }.getOrDefault("")
 }
 
 /** No redirects: a configured endpoint cannot silently forward BYOK credentials elsewhere. */
@@ -89,7 +148,9 @@ class NetworkTransport(private val debug: Boolean = false) {
                         if (continuation.isActive) continuation.resume(null)
                         return@suspendCancellableCoroutine
                     }
-                    require(code in 200..299) { "服务请求失败 HTTP $code" }
+                    if (code !in 200..299) {
+                        throw HttpStatusException(code, NetworkErrorText.summarize(NetworkErrorText.readErrorBody(connection)))
+                    }
                     require(connection.contentLengthLong <= maxBytes) { "响应超过上限" }
                     val output = ByteArrayOutputStream()
                     connection.inputStream.use { input ->

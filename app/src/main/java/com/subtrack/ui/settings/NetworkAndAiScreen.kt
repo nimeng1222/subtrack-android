@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.dp
 import com.subtrack.BuildConfig
 import com.subtrack.SubTrackApp
 import com.subtrack.domain.model.AppSettings
+import com.subtrack.ai.AiChatEngine
+import com.subtrack.ai.AiEndpoint
 import com.subtrack.network.AiModels
 import com.subtrack.network.NetworkTransport
 import com.subtrack.network.OnlineRepository
@@ -98,6 +100,10 @@ internal fun NetworkAndAiScreen(
     var fetchingModels by remember { mutableStateOf(false) }
     var modelStatus by remember { mutableStateOf<String?>(null) }
     var modelPicker by remember { mutableStateOf<List<String>?>(null) }
+    // 「测试对话」：只发一条最小请求，把服务端原话带回来，避免"能列模型但一发就 403"无从下手。
+    var testingChat by remember { mutableStateOf(false) }
+    var chatStatus by remember { mutableStateOf<String?>(null) }
+    var chatFailed by remember { mutableStateOf(false) }
 
     fun fetchModels() {
         if (fetchingModels) return
@@ -118,6 +124,7 @@ internal fun NetworkAndAiScreen(
                     key = key,
                     accept = "application/json",
                     throttle = false,
+                    userAgent = "SubTrack-Android/${BuildConfig.VERSION_NAME}",
                 ).toString(Charsets.UTF_8)
                 val models = AiModels.parse(text)
                 modelPicker = models
@@ -141,6 +148,48 @@ internal fun NetworkAndAiScreen(
             // 注意：这里**不能清 keyDraft**。草稿已经按 remember(source) 跟随来源重置，
             // 再在这里清一次会和"用户刚打完字、设置流晚到"抢时序，把刚输入的 Key 吞掉。
             observedAiSource = current
+        }
+    }
+
+    fun testChat() {
+        if (testingChat) return
+        val savedUrl = n.aiBaseUrl.trim()
+        when {
+            savedUrl.isBlank() -> { chatFailed = true; chatStatus = "先填写并保存服务地址"; return }
+            urlDraft.trim() != n.aiBaseUrl || modelDraft.trim() != n.aiModel || keyDraft.isNotEmpty() ->
+                { chatFailed = true; chatStatus = "有未保存的修改：先点「保存配置」再测试"; return }
+            n.aiModel.isBlank() -> { chatFailed = true; chatStatus = "先填模型名称"; return }
+        }
+        testingChat = true
+        chatFailed = false
+        val endpoint = AiEndpoint.chatUrl(savedUrl)
+        chatStatus = if (AiEndpoint.autoCompleted(savedUrl)) {
+            "正在测试对话（地址自动补全为 $endpoint）…"
+        } else {
+            "正在测试对话…"
+        }
+        scope.launch {
+            try {
+                val key = withContext(Dispatchers.IO) { secrets.getBound(savedUrl) }
+                require(!key.isNullOrBlank()) { "还没有保存这个地址的密钥" }
+                transport.request(
+                    endpoint,
+                    AiChatEngine.pingBody(n.aiModel.trim()),
+                    key,
+                    maxBytes = 65_536,
+                    maxRequestBytes = 65_536,
+                    throttle = false,
+                    userAgent = "SubTrack-Android/${BuildConfig.VERSION_NAME}",
+                )
+                chatStatus = "对话接口可用：这个地址、Key 与模型能正常对话"
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                chatFailed = true
+                chatStatus = e.message?.take(300) ?: "测试失败"
+            } finally {
+                testingChat = false
+            }
         }
     }
 
@@ -202,10 +251,17 @@ internal fun NetworkAndAiScreen(
                 }
                 SettingsTextField(
                     value = urlDraft,
-                    onValueChange = { urlDraft = it; saveNotice = null; modelStatus = null },
+                    onValueChange = { urlDraft = it; saveNotice = null; modelStatus = null; chatStatus = null },
                     label = "服务地址",
                     placeholder = "https://…/v1/chat/completions",
                     error = aiAddressError,
+                    helper = if (urlDraft.isBlank()) {
+                        "只填到 …/v1 也可以：发送时会自动补成 …/v1/chat/completions"
+                    } else if (AiEndpoint.autoCompleted(urlDraft)) {
+                        "发送时会自动补成 ${AiEndpoint.chatUrl(urlDraft)}"
+                    } else {
+                        null
+                    },
                     tag = "ai-endpoint",
                 )
                 SettingsTextField(
@@ -301,6 +357,23 @@ internal fun NetworkAndAiScreen(
                     saveNotice?.let {
                         Spacer(Modifier.height(6.dp))
                         Text(it, style = Type.caption, color = InkSecondary)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    SettingsButton(
+                        text = if (testingChat) "正在测试对话…" else "测试对话（发一条最小请求）",
+                        onClick = { testChat() },
+                        style = ActionStyle.Secondary,
+                        enabled = !testingChat && !aiDirty && n.aiBaseUrl.isNotBlank() && n.aiModel.isNotBlank(),
+                        tag = "ai-test-chat",
+                    )
+                    chatStatus?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            it,
+                            style = Type.caption,
+                            color = if (chatFailed) com.subtrack.ui.theme.Danger else InkSecondary,
+                            modifier = Modifier.testTag("ai-test-result"),
+                        )
                     }
                     Spacer(Modifier.height(10.dp))
                     Text(

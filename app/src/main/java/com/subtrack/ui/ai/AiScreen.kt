@@ -157,7 +157,10 @@ fun AiScreen(
         val question = input.trim()
         if (question.isEmpty() || running) return
         if (!configured) { onOpenSettings(); return }
-        val endpoint = settings.network.aiBaseUrl
+        // 用户可能只填到 /v1：模型列表能取到，但对话会 POST 到前缀本身而被拒。
+        // 发送时补全成 /chat/completions，不改已保存的值，也不动密钥绑定。
+        val savedUrl = settings.network.aiBaseUrl
+        val endpoint = com.subtrack.ai.AiEndpoint.chatUrl(savedUrl)
         val model = settings.network.aiModel
         val history = turns
         val sourceAtSend = sourceKey
@@ -169,7 +172,7 @@ fun AiScreen(
         job = scope.launch {
             val citations = mutableListOf<String>()
             try {
-                val key = withContextIo { secrets.getBound(endpoint) }
+                val key = withContextIo { secrets.getBound(savedUrl) }
                 require(!key.isNullOrBlank()) { "还没有保存这个地址的密钥，去「设置 → 联网与 AI」里保存" }
                 val digest = withContextIo {
                     LedgerDigest.build(
@@ -180,20 +183,35 @@ fun AiScreen(
                     )
                 }
                 val messages = AiChatEngine.initialMessages(
-                    AiChatEngine.systemPrompt(today.toString()) + "\n\n" + digest,
+                    AiChatEngine.systemPrompt(today.toString(), tools = true) + "\n\n" + digest,
                     history,
                 )
                 messages += AiChatEngine.userMessage(question)
                 var fetches = 0
                 var answer = ""
+                var useTools = true
                 for (round in 0 until AiChatEngine.MAX_TOOL_ROUNDS) {
-                    val body = AiChatEngine.requestBody(model, messages)
+                    val body = AiChatEngine.requestBody(model, messages, includeTools = useTools)
                     // 工具循环会在几秒内连续请求同一个地址；这里不能用"每地址 2 秒"的限流，
                     // 否则第二轮必然被打成"请求过于频繁"。轮次上限由 MAX_TOOL_ROUNDS 控制。
-                    val response = transport.request(
-                        endpoint, body, key, maxBytes = 262_144, maxRequestBytes = 262_144,
-                        throttle = false,
-                    ).toString(Charsets.UTF_8)
+                    val response = try {
+                        transport.request(
+                            endpoint, body, key, maxBytes = 262_144, maxRequestBytes = 262_144,
+                            throttle = false, userAgent = "SubTrack-Android/${BuildConfig.VERSION_NAME}",
+                        ).toString(Charsets.UTF_8)
+                    } catch (e: com.subtrack.network.HttpStatusException) {
+                        // 有些服务对"不支持 tool calling 的模型"不回 400 而是 403。第一轮就退化成
+                        // 普通对话再试一次；还失败就把服务端原文交给用户，而不是只留一句 HTTP 403。
+                        if (useTools && round == 0 && com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(e.code, e.detail)) {
+                            useTools = false
+                            messages[0] = AiChatEngine.systemMessage(
+                                AiChatEngine.systemPrompt(today.toString(), tools = false) + "\n\n" + digest,
+                            )
+                            progress = "这个服务不支持工具调用，改为普通对话…"
+                            continue
+                        }
+                        throw e
+                    }
                     when (val step = AiChatEngine.parseStep(response, citations)) {
                         is AiChatEngine.Step.Answer -> { answer = step.text; break }
                         is AiChatEngine.Step.Tools -> {
@@ -340,6 +358,9 @@ fun AiScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(message, style = Type.caption, color = Danger, modifier = Modifier.weight(1f))
+                        if (message.contains("HTTP 40")) {
+                            SettingsTextAction("设置", onClick = onOpenSettings)
+                        }
                         SettingsTextAction("重试", onClick = {
                             input = turns.lastOrNull { it.role == "user" }?.text.orEmpty()
                             error = null

@@ -115,4 +115,74 @@ class AiChatEngineTest {
         val digest = LedgerDigest.build(emptyList(), LocalDate.of(2026, 10, 31), null, null)
         assertTrue(digest.contains("暂无订阅"))
     }
+
+    @Test fun chat_body_is_explicitly_non_streaming_and_can_drop_tools() {
+        val withTools = parseObject(body())
+        assertFalse("必须显式 stream=false，避免网关按流式返回", (withTools.fields["stream"] as JsonValue.Bool).value)
+        assertTrue(withTools.fields.containsKey("tools"))
+
+        val noTools = parseObject(
+            AiChatEngine.requestBody("m", listOf(AiChatEngine.userMessage("hi")), includeTools = false),
+        )
+        assertFalse("不支持工具调用时不能带 tools", noTools.fields.containsKey("tools"))
+        assertFalse(noTools.fields.containsKey("tool_choice"))
+        assertEquals(1, (noTools.fields["messages"] as JsonValue.Arr).items.size)
+    }
+
+    @Test fun system_prompt_without_tools_stops_pretending_to_browse() {
+        val tools = AiChatEngine.systemPrompt("2026-10-31", tools = true)
+        assertTrue(tools.contains("fetch_page"))
+        val plain = AiChatEngine.systemPrompt("2026-10-31", tools = false)
+        assertFalse("没有工具时不能仍教模型去抓网页", plain.contains("fetch_page"))
+        assertTrue(plain.contains("看不到本机台账"))
+    }
+
+    @Test fun ping_body_is_a_minimal_valid_request() {
+        val root = parseObject(AiChatEngine.pingBody("my-model"))
+        assertEquals("my-model", (root.fields["model"] as JsonValue.Str).value)
+        assertEquals("16", (root.fields["max_tokens"] as JsonValue.Num).raw)
+        assertEquals(1, (root.fields["messages"] as JsonValue.Arr).items.size)
+        assertFalse(root.fields.containsKey("tools"))
+    }
+
+    @Test fun endpoint_that_stops_at_v1_is_completed_for_chat() {
+        assertEquals("https://api.x.com/v1/chat/completions", com.subtrack.ai.AiEndpoint.chatUrl("https://api.x.com/v1"))
+        assertEquals("https://api.x.com/v1/chat/completions", com.subtrack.ai.AiEndpoint.chatUrl("https://api.x.com/v1/"))
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            com.subtrack.ai.AiEndpoint.chatUrl("https://generativelanguage.googleapis.com/v1beta/openai"),
+        )
+        assertEquals("https://api.x.com/openai/chat/completions", com.subtrack.ai.AiEndpoint.chatUrl("https://api.x.com/openai"))
+    }
+
+    @Test fun a_full_endpoint_is_left_alone() {
+        val full = "https://api.x.com/v1/chat/completions"
+        assertEquals(full, com.subtrack.ai.AiEndpoint.chatUrl(full))
+        assertFalse(com.subtrack.ai.AiEndpoint.autoCompleted(full))
+        assertTrue(com.subtrack.ai.AiEndpoint.autoCompleted("https://api.x.com/v1"))
+    }
+
+    @Test fun error_body_is_turned_into_one_readable_line() {
+        assertEquals(
+            "Incorrect API key provided",
+            com.subtrack.network.NetworkErrorText.summarize("""{"error":{"message":"Incorrect API key provided"}}"""),
+        )
+        assertEquals(
+            "Forbidden",
+            com.subtrack.network.NetworkErrorText.summarize("<html><head><style>x{}</style></head><body><h1>Forbidden</h1></body></html>"),
+        )
+        assertEquals("", com.subtrack.network.NetworkErrorText.summarize("   "))
+        assertEquals("空对象不算说明", "", com.subtrack.network.NetworkErrorText.summarize("{}"))
+        val long = com.subtrack.network.NetworkErrorText.summarize("a".repeat(1000))
+        assertTrue(long.length <= 241 && long.endsWith("…"))
+    }
+
+    @Test fun only_tool_rejections_fall_back_to_plain_chat() {
+        assertTrue(com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(403, "Forbidden"))
+        assertTrue(com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(400, "tools is not supported"))
+        assertTrue(com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(400, "Function calling unavailable"))
+        assertFalse("401 是密钥问题，降级没用", com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(401, "bad key"))
+        assertFalse(com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(400, "invalid model"))
+        assertFalse(com.subtrack.ai.AiChatFallback.shouldRetryWithoutTools(429, "rate limited"))
+    }
 }

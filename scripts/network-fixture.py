@@ -161,6 +161,24 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
             return
+        if self.path == "/ai-tool-blocked":
+            # 模拟"不支持 tool calling 就回 403"的服务：带 tools 拒绝，去掉 tools 正常回答。
+            if b'"tools"' in raw:
+                body = json.dumps({"error": {"message": "this model does not support tool calling"}}).encode()
+                self.send_response(403)
+            else:
+                body = json.dumps({"choices": [{"message": {
+                    "role": "assistant", "content": "这个服务不支持工具调用；已改用普通对话回答。",
+                }}]}).encode()
+                self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if self.path == "/slow-ai":
             time.sleep(5)
         content = {"service": "Sample", "plan": "Pro", "region": "US", "currency": "USD",

@@ -22,9 +22,9 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def _json(self, obj):
+    def _json(self, obj, status=200):
         body = json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -64,12 +64,36 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if urlparse(self.path).path != "/v1/chat/completions":
+        path = urlparse(self.path).path
+        length = int(self.headers.get("Content-Length", "0"))
+        request = json.loads(self.rfile.read(length) or b"{}")
+
+        # 模拟"只填到 /v1"的常见配置错误：取模型列表能成功，对话却 POST 到前缀本身。
+        if path == "/v1":
+            self._json({"error": {"message": "路径不完整：请使用 /v1/chat/completions"}}, status=403)
+            return
+
+        # 模拟"服务端带回具体原因"的 403：验证应用会把原文带给用户，而不是只有 HTTP 403。
+        if path == "/forbidden":
+            self._json({"error": {"message": "这个 Key 没有该模型的对话权限"}}, status=403)
+            return
+
+        # 模拟不支持 tool calling 的服务：带 tools 直接 403，不带 tools 正常回答。
+        # 用来验证应用会去掉工具再试一次，而不是把 403 直接甩给用户。
+        if path == "/tool-blocked":
+            if request.get("tools"):
+                self._json({"error": {"message": "this model does not support tool calling"}}, status=403)
+                return
+            self._json({"choices": [{"message": {
+                "role": "assistant",
+                "content": "这个服务不支持工具调用；我改用普通对话回答（这是本地 mock）。",
+            }}]})
+            return
+
+        if path != "/v1/chat/completions":
             self.send_response(404)
             self.end_headers()
             return
-        length = int(self.headers.get("Content-Length", "0"))
-        request = json.loads(self.rfile.read(length) or b"{}")
         messages = request.get("messages", [])
         tool_payload = None
         for message in reversed(messages):
