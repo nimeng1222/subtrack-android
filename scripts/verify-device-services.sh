@@ -32,6 +32,10 @@ start() {
   # 日志目录由调用方给（CI 里是 artifacts/device-ci）；相对路径在 emulator-runner 的逐行 sh -c 下
   # 可能落在不存在的目录里，这里自己建，别让一个重定向把整条服务链带崩。
   mkdir -p "$(dirname "$LOG")"
+  # 统一成绝对路径：后面两个子 shell 会 cd 到 ROOT / ROOT/server，
+  # 相对路径的重定向会在那个目录下解析，导致 "services.log: No such file or directory"。
+  LOG="$(cd "$(dirname "$LOG")" && pwd)/$(basename "$LOG")"
+  PIDFILE="$(cd "$(dirname "$PIDFILE")" 2>/dev/null && pwd || echo /tmp)/$(basename "$PIDFILE")"
   : > "$LOG"
   if port_busy "$FIXTURE_PORT"; then echo "FAIL: port ${FIXTURE_PORT} already in use (refusing to reuse an unknown process)" | tee -a "$LOG" >&2; exit 1; fi
   if port_busy "$SYNC_PORT"; then echo "FAIL: port ${SYNC_PORT} already in use (refusing to reuse an unknown process)" | tee -a "$LOG" >&2; exit 1; fi
