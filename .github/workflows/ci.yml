@@ -65,19 +65,20 @@ jobs:
           api-level: 35
           arch: x86_64
           target: google_apis
+          # emulator-runner 会把 script 的每一行拆成独立的 sh -c 执行，上一行的后台 fixture 会在
+          # 该行退出时被清理掉——设备端连到 adb reverse 上就表现为 "unexpected end of stream"。
+          # 所以这里必须用同一个 bash 进程把「起服务 → 跑测试 → 停服务」串起来。
           script: |
-            # F7: the strict device gate needs BOTH services.
-            #  - 18080 network fixture (templates/fx/update/search/model fault endpoints)
-            #  - 18450 real Python sync server (SyncE2EDeviceTest + N4 device matrix)
-            # Startup is centralized so a busy port or a dead service fails the job instead of silently using an old
-            # process; each run uses a throwaway DB and both are torn down on exit.
-            set -eu
-            mkdir -p artifacts/device-ci
-            ./scripts/verify-device-services.sh start artifacts/device-ci/services.log
-            trap './scripts/verify-device-services.sh stop artifacts/device-ci/services.log' EXIT
-            adb reverse tcp:18080 tcp:18080
-            adb reverse tcp:18450 tcp:18450
-            python3 scripts/device-ci.py --output artifacts/device-ci
+            bash -lc '
+              set -euo pipefail
+              mkdir -p artifacts/device-ci
+              ./scripts/verify-device-services.sh start artifacts/device-ci/services.log
+              trap "./scripts/verify-device-services.sh stop artifacts/device-ci/services.log" EXIT
+              adb reverse tcp:18080 tcp:18080
+              adb reverse tcp:18450 tcp:18450
+              python3 scripts/device-ci.py --output artifacts/device-ci
+            '
+
       - name: 保留设备日志与结果（失败时也上传）
         if: always()
         uses: actions/upload-artifact@v4
