@@ -248,7 +248,8 @@ class ReviewRegressionTest {
 
     @Test
     fun `确认后的买断仍在累计支出中`() {
-        val oneTime = sub(cycle = BillingCycleType.ONE_TIME, priceMinor = 10_00L)
+        // 1.9.7 起“未到期不确认”：买断的确认日期也用当天，避免把流水记到未来。
+        val oneTime = sub(cycle = BillingCycleType.ONE_TIME, priceMinor = 10_00L, next = today)
         val confirmed = SubscriptionActions.confirmRenewal(oneTime, today).subscription
         assertEquals(SubscriptionStatus.EXPIRED, confirmed.status)
         val snapshot = StatsEngine.snapshot(listOf(confirmed), today, 0, 0, 0, 0, null)

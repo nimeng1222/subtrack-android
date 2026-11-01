@@ -34,6 +34,8 @@ import com.subtrack.R
 import com.subtrack.core.money.Money
 import com.subtrack.domain.model.Subscription
 import com.subtrack.domain.model.SubscriptionStatus
+import com.subtrack.domain.state.DisplayStateResolver
+import com.subtrack.domain.state.SubscriptionDisplayState
 import com.subtrack.domain.stats.Annualizer
 import com.subtrack.ui.Categories
 import com.subtrack.ui.components.AmbientBackground
@@ -73,6 +75,10 @@ fun DetailScreen(
     val monthly = Annualizer.monthlyAverageMinor(
         Annualizer.annualizeMinor(sub.priceMinor, sub.cycle, sub.customCycleDays),
     )
+    // 自动续订（1.9.7）后，“标记已续费”只用于已到期、等待确认的那一期；
+    // 未到期时不再展示按钮，避免把流水记到未来日期并多推一期。
+    val displayState = DisplayStateResolver.resolve(sub, today, hasPaymentOnDueDate = false)
+    val pendingConfirm = displayState is SubscriptionDisplayState.PendingConfirm
 
     AmbientBackground {
         Column(
@@ -166,24 +172,29 @@ fun DetailScreen(
                 InfoRow(R.drawable.ic_clock, "提醒时间", "09:00")
             }
             Spacer(Modifier.height(10.dp))
-            Text(
-                "续费确认后，下次扣费日自动推进一个周期。",
-                style = TextStyle(fontSize = 12.sp, lineHeight = 17.sp, color = InkSecondary),
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
+            if (pendingConfirm) {
+                Text(
+                    "本期已到期：确认后会按周期推进下次扣费，并补记这一期。",
+                    style = TextStyle(fontSize = 12.sp, lineHeight = 17.sp, color = InkSecondary),
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
 
-            Spacer(Modifier.height(24.dp))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .nativeShadow(corner = 16.dp, blur = 18.dp, dy = 8.dp, color = 0x3D0A7CFF)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Accent)
-                    .clickable(onClick = onRenew),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("标记已续费", style = TextStyle(fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Color.White))
+                Spacer(Modifier.height(24.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .nativeShadow(corner = 16.dp, blur = 18.dp, dy = 8.dp, color = 0x3D0A7CFF)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Accent)
+                        .clickable(onClick = onRenew),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "标记已续费",
+                        style = TextStyle(fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Color.White),
+                    )
+                }
             }
 
             Spacer(Modifier.height(14.dp))

@@ -46,6 +46,15 @@ object SubscriptionActions {
             sub.status == SubscriptionStatus.TRIAL -> sub.trialEndDate ?: sub.nextChargeDate ?: sub.anchorDate
             else -> sub.nextChargeDate ?: sub.anchorDate
         }
+        // 未到期不确认：否则会把流水记在未来日期（统计永远看不到），并把下次扣费再推一期。
+        // 到期后的自动续订走 [AutoRenewal]，这里只保留“手动补记/纠错”。
+        if (from.isAfter(today)) {
+            return Outcome(
+                expected = sub,
+                subscription = sub,
+                toast = "还没到扣费日，无需确认",
+            )
+        }
         val result = RenewalEngine.confirm(
             anchor = sub.anchorDate,
             type = sub.cycle,

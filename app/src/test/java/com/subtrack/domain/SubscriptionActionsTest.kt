@@ -55,6 +55,16 @@ class SubscriptionActionsTest {
     }
 
     @Test
+    fun `未到期手动确认不写流水也不推进`() {
+        // 1.9.7：到期由自动续订处理；手动按钮只用于补记，未到期点它不能把流水记到未来日期。
+        val before = sub(next = today.plusDays(5))
+        val out = SubscriptionActions.confirmRenewal(before, today)
+        assertTrue(out.payments.isEmpty())
+        assertEquals(before.nextChargeDate, out.subscription.nextChargeDate)
+        assertEquals("还没到扣费日，无需确认", out.toast)
+    }
+
+    @Test
     fun `一次性买断确认后转过期不再滚动`() {
         val out = SubscriptionActions.confirmRenewal(
             sub(next = LocalDate.of(2026, 9, 1), cycle = BillingCycleType.ONE_TIME),

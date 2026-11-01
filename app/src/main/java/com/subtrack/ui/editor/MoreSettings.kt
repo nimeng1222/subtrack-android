@@ -53,7 +53,7 @@ internal fun MoreSettings(
     var pickingTrialEnd by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth()) {
         FieldSurface(padding = 0.dp) {
-            ToggleRow("自动续费", "关掉后只提醒、不推进月均", autoRenew, onAutoRenew)
+            ToggleRow("自动续费", "到期自动记一笔并推进下期；关掉后需手动确认", autoRenew, onAutoRenew)
             InsetLine()
             ToggleRow("试用中", "试用结束前会单独提醒转正", isTrial, onTrial)
             if (isTrial) {
