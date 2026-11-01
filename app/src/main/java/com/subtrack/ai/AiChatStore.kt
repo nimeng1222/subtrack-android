@@ -46,17 +46,17 @@ data class AiChatState(
 class AiChatStore(
     context: Context,
     private val nowMillis: () -> Long = System::currentTimeMillis,
-) {
+) : AiChatSink {
     private val file = File(context.filesDir, FILE_NAME)
     private val mutex = Mutex()
     private val _state = MutableStateFlow(AiChatState())
-    val state: StateFlow<AiChatState> = _state.asStateFlow()
+    override val state: StateFlow<AiChatState> = _state.asStateFlow()
 
     @Volatile
     private var loaded = false
 
     /** 首次进入 AI 页时从磁盘恢复；之后直接读内存中的 StateFlow。 */
-    suspend fun ensureLoaded() {
+    override suspend fun ensureLoaded() {
         if (loaded) return
         mutex.withLock {
             if (loaded) return
@@ -70,7 +70,7 @@ class AiChatStore(
      * 开始一轮提问：没有当前对话就新建一段（标题取问题本身），否则追加到当前对话。
      * 返回对话 id；返回时用户消息已经落盘，即使随后切走页面也不会丢。
      */
-    suspend fun beginTurn(question: String): String {
+    override suspend fun beginTurn(question: String): String {
         ensureLoaded()
         var resultId = ""
         mutex.withLock {
@@ -108,7 +108,7 @@ class AiChatStore(
     }
 
     /** 追加模型的回答/停止提示；对话已被删除时静默忽略，避免把答案写回一段不存在的记录。 */
-    suspend fun appendTurn(conversationId: String, turn: ChatTurn) {
+    override suspend fun appendTurn(conversationId: String, turn: ChatTurn) {
         ensureLoaded()
         mutate { state ->
             if (state.conversations.none { it.id == conversationId }) return@mutate state

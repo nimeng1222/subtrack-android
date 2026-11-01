@@ -59,6 +59,61 @@ class AppContainer(context: Context) {
      */
     val aiChats = com.subtrack.ai.AiChatStore(context.applicationContext)
 
+    /**
+     * AI 生成的应用级作用域（1.9.8）。
+     *
+     * 以前生成协程挂在 AiScreen 的 `rememberCoroutineScope()` 上，切换底部 Tab 时
+     * `ScreenRouter` 的 `when(tab)` 让 AI 页离开组合，任务随即被取消（表现为"已停止"）。
+     * 现在任务跑在这里：切页、页面重建都不影响；回到 AI 页从 [aiRunner] 的 state 重新挂接。
+     * 进程被系统杀掉后任务仍会中断（没有前台服务，这是明确取舍）。
+     */
+    private val aiScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val aiTransport = com.subtrack.network.NetworkTransport(BuildConfig.DEBUG)
+    private val aiSecrets by lazy { com.subtrack.network.SecretStore(context.applicationContext) }
+
+    val aiRunner: com.subtrack.ai.AiChatRunner by lazy {
+        com.subtrack.ai.AiChatRunner(
+            scope = aiScope,
+            chatStore = aiChats,
+            transport = aiTransport,
+            // 非流式对话要等服务端把整段回答生成完才回第一个字节：总超时 90 秒、读超时 60 秒。
+            // 旧的 25 秒 / 15 秒会把正常的长回答直接判成 "timeout"。
+            modelTransport = com.subtrack.ai.AiModelTransport { endpoint, body, key ->
+                aiTransport.request(
+                    endpoint, body, key, maxBytes = 262_144, maxRequestBytes = 262_144,
+                    throttle = false, userAgent = "SubTrack-Android/${BuildConfig.VERSION_NAME}",
+                    totalTimeoutMillis = com.subtrack.ai.AiChatRunner.MODEL_TOTAL_TIMEOUT_MS,
+                    connectTimeoutMillis = com.subtrack.ai.AiChatRunner.MODEL_CONNECT_TIMEOUT_MS,
+                    readTimeoutMillis = com.subtrack.ai.AiChatRunner.MODEL_READ_TIMEOUT_MS,
+                ).toString(Charsets.UTF_8)
+            },
+            settingsProvider = { settings },
+            keyProvider = { url -> aiSecrets.getBound(url) },
+            todayProvider = { clock.today() },
+            digestProvider = { today -> aiDigest(today) },
+        )
+    }
+
+    /** 与 AI 页原来在本页计算的口径一致：近 90 天 / 本月实付 + 台账摘要。 */
+    private suspend fun aiDigest(today: java.time.LocalDate): String {
+        val current = awaitSettings()
+        val fx = if (current.multiCurrencyEnabled) current.effectiveFxRates else null
+        val recent = runCatching {
+            com.subtrack.domain.stats.CurrencyConverter
+                .paymentsCnySummary(repository.paymentsBetween(today.minusDays(90), today), fx).first
+        }.getOrNull()
+        val month = runCatching {
+            com.subtrack.domain.stats.CurrencyConverter
+                .paymentsCnySummary(repository.paymentsBetween(today.withDayOfMonth(1), today), fx).first
+        }.getOrNull()
+        return com.subtrack.ai.LedgerDigest.build(
+            subscriptions = repository.observeAllSnapshot(),
+            today = today,
+            recentPaidMinor = recent,
+            monthPaidMinor = month,
+        )
+    }
+
     val loadedSettings = com.subtrack.data.settings.LoadedSettings()
     val settingsState = loadedSettings.state
     val settings: AppSettings get() = loadedSettings.current()

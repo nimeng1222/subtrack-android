@@ -98,7 +98,12 @@ class NetworkTransport(private val debug: Boolean = false) {
                         maxRequestBytes: Int = 65_536, setupToken: String? = null,
                         accept: String = "application/json",
                         userAgent: String? = null,
-                        redirectHosts: Set<String> = emptySet()): ByteArray = withTimeout(25_000) { withContext(Dispatchers.IO) {
+                        redirectHosts: Set<String> = emptySet(),
+                        // 默认值保持原样（25s/8s/15s）；AI 对话这类"非流式、要等服务端生成完"的
+                        // 请求必须放宽读超时，否则正常的长回答会被误判成 timeout。
+                        totalTimeoutMillis: Long = 25_000,
+                        connectTimeoutMillis: Int = 8_000,
+                        readTimeoutMillis: Int = 15_000): ByteArray = withTimeout(totalTimeoutMillis) { withContext(Dispatchers.IO) {
         val uri = NetworkUrls.validate(url, debug)
         require(maxRequestBytes in 1..1_048_576)
         require(key == null || (!key.contains('\r') && !key.contains('\n')))
@@ -114,8 +119,8 @@ class NetworkTransport(private val debug: Boolean = false) {
         var hops = 0
         while (true) {
             val connection = target.toURL().openConnection() as HttpURLConnection
-            connection.connectTimeout = 8_000
-            connection.readTimeout = 15_000
+            connection.connectTimeout = connectTimeoutMillis
+            connection.readTimeout = readTimeoutMillis
             connection.instanceFollowRedirects = false
             connection.setRequestProperty("Accept", accept)
             if (!key.isNullOrBlank()) connection.setRequestProperty("Authorization", "Bearer $key")

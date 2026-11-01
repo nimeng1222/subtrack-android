@@ -157,8 +157,6 @@ fun ScreenRouter(
 
         tab == 2 -> com.subtrack.ui.ai.AiScreen(
             settings = settings,
-            subscriptions = subscriptions,
-            today = today,
             onOpenSettings = { onNavigateSettings(com.subtrack.ui.settings.SettingsRoute.NETWORK) },
             onSelectTab = onSelectTab,
             onSelectModel = onSelectAiModel,

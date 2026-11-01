@@ -48,6 +48,13 @@ internal object AiChatEngine {
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36 SubTrack"
 
+    private val ledgerTool = tool(
+        "read_ledger",
+        "读取本机订阅台账摘要（名称、金额、周期、下次扣费、状态、近期支出合计）。回答本地问题或对比现价时使用。",
+        emptyMap(),
+        required = emptyList(),
+    )
+
     private val tools = JsonValue.Arr(
         listOf(
             tool(
@@ -79,14 +86,28 @@ internal object AiChatEngine {
                 ),
                 required = listOf("url"),
             ),
-            tool(
-                "read_ledger",
-                "读取本机订阅台账摘要（名称、金额、周期、下次扣费、状态、近期支出合计）。回答本地问题或对比现价时使用。",
-                emptyMap(),
-                required = emptyList(),
-            ),
+            ledgerTool,
         ),
     )
+
+    /**
+     * 台账类问题（"我花了多少钱"）只给 read_ledger：让模型不必试探 search_web，
+     * 一轮就能答完。之前这类问题也会拿到全部工具，模型偶尔先去搜一遍，
+     * 既多花几轮往返，也更容易撞上请求超时。
+     */
+    private val ledgerOnlyTools = JsonValue.Arr(listOf(ledgerTool))
+
+    /** 判断是不是"问自己的台账"：命中自我支出说法，且没有明确要查外部价格/官网。 */
+    internal fun looksLikeLedgerQuestion(question: String): Boolean {
+        val q = question.replace(Regex("\\s+"), "")
+        val selfSpend = listOf(
+            "我花了", "花了多少", "花掉", "我一共", "我付了", "实付", "支出", "开销", "账单", "台账",
+            "我的订阅", "我订了", "我订阅", "本月花", "这月花", "这个月花", "上个月花", "累计花", "一共花",
+        ).any { q.contains(it) }
+        val research = listOf("官网", "定价", "价格", "套餐", "会员", "涨价", "优惠", "汇率")
+            .any { q.contains(it) }
+        return selfSpend && !research
+    }
 
     private fun tool(
         name: String,
@@ -203,7 +224,12 @@ internal object AiChatEngine {
      * [includeTools] 为 false 时完全不发 tools/tool_choice —— 有些服务对不支持 tool calling 的模型
      * 不是回 400，而是直接 403；这时退化成普通对话仍然可用。
      */
-    internal fun requestBody(model: String, messages: List<JsonValue>, includeTools: Boolean = true): String {
+    internal fun requestBody(
+        model: String,
+        messages: List<JsonValue>,
+        includeTools: Boolean = true,
+        ledgerOnly: Boolean = false,
+    ): String {
         val body = mutableMapOf<String, JsonValue>(
             "model" to JsonValue.Str(model),
             "temperature" to JsonValue.Num("0.2"),
@@ -213,7 +239,7 @@ internal object AiChatEngine {
         )
         if (includeTools) {
             body["tool_choice"] = JsonValue.Str("auto")
-            body["tools"] = tools
+            body["tools"] = if (ledgerOnly) ledgerOnlyTools else tools
         }
         return JsonValue.Obj(body).render()
     }
