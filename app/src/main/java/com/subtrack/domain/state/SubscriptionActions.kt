@@ -18,6 +18,9 @@ import java.util.UUID
  */
 object SubscriptionActions {
 
+    /** 未到期时手动/通知确认的统一提示；通知路径据此拒绝，而不是静默返回成功。 */
+    const val NOT_DUE_CONFIRM_MESSAGE = "还没到扣费日，无需确认"
+
     /** 一次操作产生的全部副作用：新订阅态、要写的流水、给用户的提示。 */
     data class Outcome(
         val subscription: Subscription,
@@ -33,6 +36,21 @@ object SubscriptionActions {
         val expected: Subscription? = null,
     )
 
+    /** 本期确认的锚点：试用看结束日，其余看下次扣费日。 */
+    private fun renewalChargeDate(sub: Subscription): LocalDate = when {
+        sub.status == SubscriptionStatus.TRIAL -> sub.trialEndDate ?: sub.nextChargeDate ?: sub.anchorDate
+        else -> sub.nextChargeDate ?: sub.anchorDate
+    }
+
+    /**
+     * 手动/通知确认是否已到期（含当天）。
+     *
+     * 详情页、首页待确认和通知确认共用这一条规则：未到期时既不能记未来日期的流水，
+     * 也不能把下次扣费再推一期；通知路径据此返回“未处理”并提示，而不是假装成功。
+     */
+    fun isRenewalDue(sub: Subscription, today: LocalDate): Boolean =
+        !renewalChargeDate(sub).isAfter(today)
+
     /**
      * AC-11 / AC-12：标记已续费。
      * 会补记多期（每期一条流水），并提示"已推进 N 期"。
@@ -42,17 +60,14 @@ object SubscriptionActions {
      * 否则 DisplayStateResolver 会继续拿旧 trialEndDate 判"待确认"，可以无限重复推进。
      */
     fun confirmRenewal(sub: Subscription, today: LocalDate): Outcome {
-        val from = when {
-            sub.status == SubscriptionStatus.TRIAL -> sub.trialEndDate ?: sub.nextChargeDate ?: sub.anchorDate
-            else -> sub.nextChargeDate ?: sub.anchorDate
-        }
+        val from = renewalChargeDate(sub)
         // 未到期不确认：否则会把流水记在未来日期（统计永远看不到），并把下次扣费再推一期。
         // 到期后的自动续订走 [AutoRenewal]，这里只保留“手动补记/纠错”。
-        if (from.isAfter(today)) {
+        if (!isRenewalDue(sub, today)) {
             return Outcome(
                 expected = sub,
                 subscription = sub,
-                toast = "还没到扣费日，无需确认",
+                toast = NOT_DUE_CONFIRM_MESSAGE,
             )
         }
         val result = RenewalEngine.confirm(

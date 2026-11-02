@@ -16,26 +16,39 @@ enum class NotificationAction { CONFIRM, SNOOZE, MUTE }
 class NotificationActionHandler(
     private val repository: SubscriptionRepository,
     private val clock: AppClock,
+    /** 需要提示用户但本次没有落库时调用（例如提前通知上点“已续费”）。 */
+    private val onNotice: suspend (String) -> Unit = {},
     private val afterCommit: suspend (SubscriptionActions.Outcome) -> Unit,
 ) {
     suspend fun handle(id: String, chargeDay: Int?, action: NotificationAction): Boolean {
         if (chargeDay == null || id == ReminderService.TEST_SUBSCRIPTION_ID) return false
+        var notice: String? = null
         val result = repository.runInTransaction {
             val sub = repository.get(id) ?: return@runInTransaction null
             if (sub.isDeleted || sub.status !in listOf(SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIAL) ||
                 sub.currentChargeDate()?.toEpochDay() != chargeDay.toLong()) return@runInTransaction null
             val due = sub.currentChargeDate()!!
-            // Same current-period confirmation as the app UI, including an advance notification.
             if (repository.paymentsOf(id).any { it.paidAt == due }) return@runInTransaction null
+            val today = clock.today()
+            // Same current-period rule as the detail page: an advance notification is not due yet,
+            // so CONFIRM must not claim success or write an empty payment/upsert.
+            if (action == NotificationAction.CONFIRM && !SubscriptionActions.isRenewalDue(sub, today)) {
+                notice = SubscriptionActions.NOT_DUE_CONFIRM_MESSAGE
+                return@runInTransaction null
+            }
             val outcome = when (action) {
-                NotificationAction.CONFIRM -> SubscriptionActions.confirmRenewal(sub, clock.today())
-                NotificationAction.SNOOZE -> SubscriptionActions.snooze(sub, clock.today())
+                NotificationAction.CONFIRM -> SubscriptionActions.confirmRenewal(sub, today)
+                NotificationAction.SNOOZE -> SubscriptionActions.snooze(sub, today)
                 NotificationAction.MUTE -> SubscriptionActions.muteThisCycle(sub, due)
             }
             repository.recordPayments(outcome.payments)
             repository.upsert(outcome.subscription)
             outcome
-        } ?: return false
+        }
+        if (result == null) {
+            notice?.let { onNotice(it) }
+            return false
+        }
         afterCommit(result)
         return true
     }

@@ -97,8 +97,13 @@ class Round2DeviceTest {
             val future = sub(today.plusDays(1)); repo.upsert(future)
             for (action in NotificationAction.entries) assertFalse(handler.handle(future.id, null, action))
             assertTrue(repo.paymentsOf(future.id).isEmpty())
-            assertTrue(handler.handle(future.id, future.nextChargeDate!!.toEpochDay().toInt(), NotificationAction.CONFIRM))
-            assertEquals(future.nextChargeDate, repo.paymentsOf(future.id).single().paidAt)
+            // 1.9.7 起未到期不确认：提前通知上点“已续费”不得返回成功，也不得写空流水或推进日期。
+            val notices = mutableListOf<String>()
+            val guarded = NotificationActionHandler(repo, clock, onNotice = { notices += it }) {}
+            assertFalse(guarded.handle(future.id, future.nextChargeDate!!.toEpochDay().toInt(), NotificationAction.CONFIRM))
+            assertTrue(repo.paymentsOf(future.id).isEmpty())
+            assertEquals(future, repo.get(future.id))
+            assertEquals(listOf(SubscriptionActions.NOT_DUE_CONFIRM_MESSAGE), notices)
         } finally { db.close() }
     }
 

@@ -3,12 +3,14 @@ package com.subtrack.reminder
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
 import com.subtrack.SubTrackApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Period-bound actions; transactional validation and mutation live in NotificationActionHandler. */
 class ReminderActionReceiver : BroadcastReceiver() {
@@ -32,7 +34,15 @@ class ReminderActionReceiver : BroadcastReceiver() {
                     ACTION_MUTE -> NotificationAction.MUTE
                     else -> null
                 }
-                if (requested != null) NotificationActionHandler(container.repository, container.clock) { outcome ->
+                if (requested != null) NotificationActionHandler(
+                    repository = container.repository,
+                    clock = container.clock,
+                    onNotice = { text ->
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context.applicationContext, text, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                ) { outcome ->
                     container.repository.get(outcome.subscription.id)?.let { current ->
                         container.reminderService.replan(current)
                         if (outcome.snoozeRequested && current == outcome.subscription) container.reminderService.scheduleSnoozeTomorrow(current)
